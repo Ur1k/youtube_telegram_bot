@@ -2,3 +2,5 @@
 last_video.json
 __pycache__/
 *.pyc
+bot.log
+bot.log.*
