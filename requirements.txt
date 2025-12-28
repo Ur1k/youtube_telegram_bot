@@ -1,3 +1,4 @@
 feedparser
 requests
 sgmllib3k
+python-dotenv

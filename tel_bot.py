@@ -1,180 +1,126 @@
-import feedparser
-import requests
-import json
-import os
-import time
 import logging
-import traceback
-from logging.handlers import RotatingFileHandler
-from dotenv import load_dotenv
+import time
+import requests
+import xml.etree.ElementTree as ET
+from telegram_poster import send_admin_message
 
-load_dotenv()
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-YOUTUBE_FEED = (
-    "https://www.youtube.com/feeds/videos.xml?channel_id=UCN0DC6fbpIG2Gz95UVgG6jw"
+from config import (
+    YOUTUBE_FEED_URL,
+    CHECK_INTERVAL_SECONDS,
+    HEARTBEAT_INTERVAL_HOURS,
+    LOG_RETENTION_DAYS,
 )
-
-# Token must come from environment
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-
-# Channel or chat where new videos are posted
-TELEGRAM_CHAT_ID = "@YurikTrader"
-
-# Admin chat for error notifications
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-
-STATE_FILE = os.path.join(BASE_DIR, "last_video.json")
-LOG_FILE = os.path.join(BASE_DIR, "bot.log")
-HEARTBEAT_FILE = os.path.join(BASE_DIR, "last_heartbeat.txt")
-
-# === LOGGING WITH ROTATION ===
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Rotate log at 5 MB, keep 5 backups
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5)
-file_handler.setFormatter(
-    logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+from utils import (
+    setup_logging,
+    load_last_video_id,
+    save_last_video_id,
+    should_send_heartbeat,
+    mark_heartbeat_sent,
+    cleanup_old_logs,
 )
-logger.addHandler(file_handler)
-
-# Console output (useful for journalctl)
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(
-    logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-)
-logger.addHandler(console_handler)
+from notifier import notify_all
+from telegram_poster import send_telegram_message
 
 
-def get_last_saved_video_id():
-    if not os.path.exists(STATE_FILE):
-        logging.info("State file not found, starting fresh.")
-        return None
-    try:
-        with open(STATE_FILE, "r") as f:
-            data = json.load(f)
-            return data.get("last_video_id")
-    except Exception as e:
-        logging.warning("Failed to read state file: %s", e)
+def fetch_latest_video(feed_url: str):
+    """
+    Return latest video info from YouTube RSS feed as dict:
+    {
+        "id": str,
+        "title": str,
+        "url": str,
+        "thumbnail_url": str or None
+    }
+    """
+    resp = requests.get(feed_url, timeout=15)
+    resp.raise_for_status()
+
+    root = ET.fromstring(resp.content)
+
+    # YouTube RSS uses Atom namespace
+    ns = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "media": "http://search.yahoo.com/mrss/",
+    }
+
+    entry = root.find("atom:entry", ns)
+    if entry is None:
         return None
 
+    video_id = entry.findtext("atom:id", default="", namespaces=ns)
+    title = entry.findtext("atom:title", default="", namespaces=ns)
 
-def save_last_video_id(video_id):
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump({"last_video_id": video_id}, f)
-        logging.info("Saved last video ID: %s", video_id)
-    except Exception as e:
-        logging.error("Failed to write state file: %s", e)
-
-
-def send_raw_telegram_message(chat_id, text, disable_notification=False):
-    if not TELEGRAM_TOKEN:
-        logging.error("TELEGRAM_TOKEN is not set.")
-        return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-
-    if disable_notification:
-        payload["disable_notification"] = True
-
-    for attempt in range(1, 4):
-        try:
-            response = requests.post(url, data=payload, timeout=10)
-            if response.status_code == 200:
-                logging.info("Message sent successfully.")
-                return
-            else:
-                logging.warning(
-                    "Telegram error %s: %s", response.status_code, response.text
-                )
-        except Exception as e:
-            logging.warning("Network error: %s", e)
-
-        time.sleep(3)
-
-    logging.error("Failed to send message after retries.")
-
-
-def notify_admin(error_message):
-    text = f"⚠️ Bot error:\n{error_message}"
-    send_raw_telegram_message(ADMIN_CHAT_ID, text, disable_notification=True)
-
-
-def send_to_telegram(title, link):
-    message = f"🔥 New YouTube video!\n\n{title}\n{link}"
-    send_raw_telegram_message(TELEGRAM_CHAT_ID, message)
-
-
-def send_heartbeat():
-    """Send a daily 'bot is alive' message."""
-    message = "💡 Bot is alive and running normally."
-    send_raw_telegram_message(ADMIN_CHAT_ID, message, disable_notification=True)
-    logging.info("Heartbeat sent.")
-
-    with open(HEARTBEAT_FILE, "w") as f:
-        f.write(str(time.time()))
-
-
-def should_send_heartbeat():
-    """Return True if 24 hours passed since last heartbeat."""
-    if not os.path.exists(HEARTBEAT_FILE):
-        return True
-
-    try:
-        with open(HEARTBEAT_FILE, "r") as f:
-            last = float(f.read().strip())
-    except:
-        return True
-
-    return (time.time() - last) >= 86400  # 24 hours
-
-
-def check_and_post_latest_video():
-    logging.info("Checking YouTube feed...")
-
-    feed = feedparser.parse(YOUTUBE_FEED)
-
-    if not feed.entries:
-        logging.warning("Feed is empty or failed to load.")
-        return
-
-    latest = feed.entries[0]
-
-    video_id = getattr(latest, "yt_videoid", None)
-    title = getattr(latest, "title", None)
-    link = getattr(latest, "link", None)
-
-    if not video_id or not link:
-        logging.warning("Invalid feed entry.")
-        return
-
-    last_saved = get_last_saved_video_id()
-
-    if video_id != last_saved:
-        logging.info("New video detected: %s", title)
-        send_to_telegram(title, link)
-        save_last_video_id(video_id)
+    link_elem = entry.find("atom:link[@rel='alternate']", ns)
+    if link_elem is not None:
+        url = link_elem.attrib.get("href", "")
     else:
-        logging.info("No new videos.")
+        url = ""
+
+    # Try to get thumbnail from media:thumbnail
+    thumb_elem = entry.find(".//media:thumbnail", ns)
+    thumbnail_url = thumb_elem.attrib.get("url") if thumb_elem is not None else None
+
+    # Normalize video ID (YouTube Atom id often looks like "...:video:VIDEOID")
+    if ":" in video_id:
+        video_id = video_id.split(":")[-1]
+
+    return {
+        "id": video_id,
+        "title": title,
+        "url": url,
+        "thumbnail_url": thumbnail_url,
+    }
 
 
-if __name__ == "__main__":
+def send_heartbeat_and_cleanup():
+    send_admin_message("💡 Bot is alive and running normally.", silent=True)
+    logging.info("Heartbeat sent.")
+    mark_heartbeat_sent()
+    cleanup_old_logs(".", days=LOG_RETENTION_DAYS)
+
+
+def main():
+    setup_logging()
     logging.info("Bot started.")
+
+    last_video_id = load_last_video_id()
 
     while True:
         try:
-            check_and_post_latest_video()
+            logging.info("Checking YouTube feed...")
+            video = fetch_latest_video(YOUTUBE_FEED_URL)
 
-            if should_send_heartbeat():
-                send_heartbeat()
+            if video is None:
+                logging.warning("No entries found in YouTube feed.")
+            else:
+                if last_video_id is None:
+                    # First run: just record the latest video
+                    last_video_id = video["id"]
+                    save_last_video_id(last_video_id)
+                    logging.info(f"Initialized last_video_id with: {last_video_id}")
+                elif video["id"] != last_video_id:
+                    logging.info(f"New video detected: {video['title']}")
+                    last_video_id = video["id"]
+                    save_last_video_id(last_video_id)
+                    notify_all(video)
+                else:
+                    logging.info("No new videos.")
+
+            # Heartbeat logic
+            if should_send_heartbeat(hours=HEARTBEAT_INTERVAL_HOURS):
+                send_heartbeat_and_cleanup()
 
         except Exception as e:
-            error_text = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
-            logging.exception("Unhandled error.")
-            notify_admin(error_text)
+            logging.exception(f"Error in main loop: {e}")
+            # Try to notify via Telegram (best-effort)
+            try:
+                send_admin_message(f"❌ Bot error:\n{e}")
+            except Exception:
+                pass
 
-        time.sleep(1800)  # 30 minutes
+        time.sleep(CHECK_INTERVAL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()
