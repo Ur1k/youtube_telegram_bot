@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 bot.log
 bot.log.*
+last_heartbeat.txt
