@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env if present
 load_dotenv()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # --- Telegram ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_PUBLIC_CHAT_ID = os.getenv("TELEGRAM_PUBLIC_CHAT_ID", "@YurikTrader")
@@ -34,9 +36,9 @@ YOUTUBE_FEED_URL = os.getenv(
 # --- Bot behavior ---
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "1800"))  # 30 minutes
 HEARTBEAT_INTERVAL_HOURS = int(os.getenv("HEARTBEAT_INTERVAL_HOURS", "24"))
-LOG_FILE = os.getenv("LOG_FILE", "bot.log")
 LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "7"))
 
 # --- Files ---
-LAST_VIDEO_FILE = os.getenv("LAST_VIDEO_FILE", "last_video.json")
-LAST_HEARTBEAT_FILE = os.getenv("LAST_HEARTBEAT_FILE", "last_heartbeat.txt")
+LOG_FILE = os.path.join(BASE_DIR, "bot.log")
+LAST_VIDEO_FILE = os.path.join(BASE_DIR, "last_video.json")
+LAST_HEARTBEAT_FILE = os.path.join(BASE_DIR, "last_heartbeat.txt")

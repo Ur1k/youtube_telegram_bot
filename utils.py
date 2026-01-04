@@ -7,23 +7,27 @@ from datetime import datetime, timedelta
 
 from config import LOG_FILE, LOG_RETENTION_DAYS, LAST_VIDEO_FILE, LAST_HEARTBEAT_FILE
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def setup_logging():
-    """Configure rotating file logging."""
+    """Configure rotating file logging with UTF-8 console output."""
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-
-    # Rotating file handler
+    # Rotating file handler (UTF‑8 by default)
     file_handler = logging.handlers.RotatingFileHandler(
-        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5  # 5 MB
+        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     file_handler.setFormatter(formatter)
-
-    # Console handler
+    # Console handler with forced UTF‑8
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
+    # Force UTF‑8 encoding for console output
+    console_handler.stream = open(
+        console_handler.stream.fileno(), mode="w", encoding="utf-8", buffering=1
+    )
 
     logger.handlers.clear()
     logger.addHandler(file_handler)

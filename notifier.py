@@ -27,7 +27,7 @@ def notify_all(video):
 
     # Facebook
     try:
-        post_to_facebook(url, title)
+        post_to_facebook(video["url"], video["title"], video["thumbnail_url"])
     except Exception as e:
         logging.error(f"Error posting to Facebook: {e}")
 
